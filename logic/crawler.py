@@ -3,6 +3,7 @@ import json
 import os
 import re
 import sys
+import shutil
 import gradio as gr
 from logic.utils import run_module_stream
 from logic.asr import extract_speech_text_stream
@@ -21,6 +22,31 @@ PLATFORM_MAP = {
     "B站": "bilibili",
     "快手": "ks",
 }
+
+
+def clear_login_state(platform: str):
+    """
+    清除指定平台的登录状态（浏览器缓存），用于换号重新登录。
+    """
+    crawler_path = os.path.join(os.getcwd(), "modules", "mediacrawler")
+    platform_code = PLATFORM_MAP.get(platform, "dy")
+    
+    # 构建 browser_data 路径
+    browser_data_dir = os.path.join(crawler_path, "browser_data", f"cdp_{platform_code}_user_data_dir")
+    
+    result_msg = ""
+    
+    if os.path.exists(browser_data_dir):
+        try:
+            shutil.rmtree(browser_data_dir)
+            result_msg = f"✅ 已清除 {platform} 的登录状态！\n\n下次采集时会弹出登录窗口，请用**新账号**扫码登录。"
+        except Exception as e:
+            result_msg = f"❌ 清除失败: {e}"
+    else:
+        result_msg = f"ℹ️ {platform} 暂无登录缓存（可能从未登录过）"
+    
+    return result_msg
+
 
 def clean_old_data(crawler_path: str, platform_code: str):
     """

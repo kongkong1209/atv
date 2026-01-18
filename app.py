@@ -1,7 +1,7 @@
 import time
 import random
 import gradio as gr
-from logic.crawler import real_crawler_task, real_crawler_link_task
+from logic.crawler import real_crawler_task, real_crawler_link_task, clear_login_state
 from logic.editor import real_deepseek_rewrite
 
 
@@ -106,7 +106,14 @@ with gr.Blocks(title="SuperMediaFactory") as demo:
                                 label="抖音视频链接",
                                 placeholder="请粘贴分享链接...",
                             )
-                            link_btn = gr.Button("开始提取")
+                            with gr.Row():
+                                link_btn = gr.Button("🚀 开始提取", variant="primary")
+                                clear_login_btn = gr.Button("🔄 清除登录（换号）", variant="secondary")
+                            login_status = gr.Textbox(
+                                label="登录状态",
+                                interactive=False,
+                                visible=False,
+                            )
                 with gr.Column(scale=3):
                     collect_thought = gr.Accordion("🧠 AI 深度思考中...", open=True)
                     with collect_thought:
@@ -129,6 +136,17 @@ with gr.Blocks(title="SuperMediaFactory") as demo:
                 real_crawler_link_task,
                 inputs=[platform, video_link],
                 outputs=[collect_thought, collect_thought_md, collect_table, collect_text],
+            )
+            
+            # 清除登录状态按钮
+            def on_clear_login(plat):
+                msg = clear_login_state(plat)
+                return gr.update(value=msg, visible=True)
+            
+            clear_login_btn.click(
+                on_clear_login,
+                inputs=[platform],
+                outputs=[login_status],
             )
 
         with gr.TabItem("文案编辑"):
