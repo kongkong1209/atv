@@ -1,3 +1,5 @@
 gradio
 openai
 requests
+openai-whisper
+torch

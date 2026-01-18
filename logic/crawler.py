@@ -5,6 +5,7 @@ import re
 import sys
 import gradio as gr
 from logic.utils import run_module_stream
+from logic.asr import extract_speech_text_stream
 
 # 平台代码 -> 文件夹名称的映射
 FOLDER_NAME_MAP = {
@@ -100,7 +101,7 @@ def real_crawler_task(platform: str, keyword_or_link: str, count: int):
 
 def real_crawler_link_task(platform: str, video_link: str):
     """
-    单链接提取模式 - 使用 MediaCrawler 的 detail 模式
+    单链接提取模式 - 使用 MediaCrawler + Whisper ASR 提取口播文案
     """
     # --- 初始化 ---
     thought_log = ""
@@ -131,7 +132,10 @@ def real_crawler_link_task(platform: str, video_link: str):
     thought_log += clean_old_data(crawler_path, platform_code)
     yield (gr.update(), gr.update(value=thought_log), [], "")
 
-    # --- 构造命令 (使用 detail 模式 + specified_id) ---
+    # === 阶段1: MediaCrawler 提取视频信息 ===
+    thought_log += "> 🚀 **阶段1**: MediaCrawler 提取视频信息...\n\n"
+    yield (gr.update(), gr.update(value=thought_log), [], "")
+
     cmd = [
         sys.executable,
         "main.py",
@@ -139,31 +143,70 @@ def real_crawler_link_task(platform: str, video_link: str):
         "--type", "detail",
         "--specified_id", clean_url,
         "--lt", "qrcode",
-        "--get_comment", "false",  # 单链接模式不需要评论
+        "--get_comment", "false",
     ]
 
-    thought_log += f"> 🚀 使用 MediaCrawler detail 模式提取视频...\n\n"
-    thought_log += f"> [DEBUG] 命令: {' '.join(cmd)}\n\n"
-    yield (gr.update(), gr.update(value=thought_log), [], "")
-
-    # --- 运行爬虫 ---
     for line in run_module_stream(cmd, cwd=crawler_path):
         thought_log += f"> 🤖 {line}\n\n"
         yield (gr.update(), gr.update(value=thought_log), [], "")
 
-    # --- 读取结果 ---
-    _, best_content, error_msg = get_latest_data(crawler_path, platform_code, mode="detail")
+    # --- 读取 MediaCrawler 结果 ---
+    _, detail_info, error_msg = get_latest_data(crawler_path, platform_code, mode="detail")
     
     if error_msg:
         thought_log += f"> ❌ {error_msg}\n"
         yield (gr.update(open=False), gr.update(value=thought_log), [], "")
-    elif best_content:
-        thought_log += "> ✅ 提取成功！\n"
-        thought_log += "\n💡 提示：可直接复制上方文案到「文案编辑」进行 AI 改写"
-        yield (gr.update(open=False), gr.update(value=thought_log), None, best_content)
-    else:
-        thought_log += "> ❌ 未能提取到文案内容\n"
+        return
+
+    if not detail_info or not isinstance(detail_info, dict):
+        thought_log += "> ❌ 未能提取到视频信息\n"
         yield (gr.update(open=False), gr.update(value=thought_log), [], "")
+        return
+
+    title = detail_info.get("title", "")
+    desc = detail_info.get("desc", "")
+    video_url = detail_info.get("video_url", "")
+    nickname = detail_info.get("nickname", "")
+
+    thought_log += f"> ✅ 视频信息提取成功！作者: {nickname}\n\n"
+    yield (gr.update(), gr.update(value=thought_log), [], "")
+
+    # === 阶段2: Whisper ASR 提取口播文案 ===
+    thought_log += "> 🎤 **阶段2**: Whisper 识别口播文案...\n\n"
+    yield (gr.update(), gr.update(value=thought_log), [], "")
+
+    if not video_url:
+        thought_log += "> ⚠️ 未获取到视频下载链接，跳过口播提取\n"
+        # 只返回标题和简介
+        final_content = f"【标题】\n{title}\n\n【简介】\n{desc}\n\n【作者】\n{nickname}\n\n⚠️ 未能提取口播文案（无视频链接）"
+        yield (gr.update(open=False), gr.update(value=thought_log), None, final_content)
+        return
+
+    # 调用 ASR 流式处理
+    speech_text = ""
+    for progress, result in extract_speech_text_stream(video_url, model_name="base"):
+        thought_log += f"> {progress}\n\n"
+        yield (gr.update(), gr.update(value=thought_log), [], "")
+        if result:
+            speech_text = result
+
+    # === 最终输出 ===
+    if speech_text and not speech_text.startswith("❌"):
+        thought_log += "> ✅ **全部完成！** 口播文案已提取\n"
+        final_content = (
+            f"【口播文案】\n{speech_text}\n\n"
+            f"───────────────\n"
+            f"【标题】{title}\n"
+            f"【简介】{desc}\n"
+            f"【作者】{nickname}\n\n"
+            f"💡 可直接复制口播文案到「文案编辑」进行 AI 改写"
+        )
+        yield (gr.update(open=False), gr.update(value=thought_log), None, final_content)
+    else:
+        thought_log += f"> ⚠️ 口播提取失败: {speech_text}\n"
+        # 降级返回标题和简介
+        final_content = f"【标题】\n{title}\n\n【简介】\n{desc}\n\n【作者】\n{nickname}\n\n⚠️ 口播提取失败，请检查 ffmpeg 和 whisper 是否安装"
+        yield (gr.update(open=False), gr.update(value=thought_log), None, final_content)
 
 def get_latest_data(crawler_path: str, platform_code: str, mode: str):
     folder_name = FOLDER_NAME_MAP.get(platform_code, platform_code)
@@ -200,15 +243,22 @@ def get_latest_data(crawler_path: str, platform_code: str, mode: str):
     if not items:
         return None, None, "数据文件内容为空"
 
-    # 单链接模式
+    # 单链接模式 - 返回更多字段用于 ASR
     if mode == "detail":
         last_item = items[-1]
         if isinstance(last_item, dict):
             title = last_item.get("title", "") or ""
             desc = last_item.get("desc", "") or ""
-            # 简单纯净的返回
-            content = f"【标题】{title}\n\n【文案】{desc}"
-            return None, content, None
+            video_url = last_item.get("video_download_url", "") or ""
+            nickname = last_item.get("nickname", "") or ""
+            # 返回结构化数据
+            detail_info = {
+                "title": title,
+                "desc": desc,
+                "video_url": video_url,
+                "nickname": nickname,
+            }
+            return None, detail_info, None
         return None, None, "数据格式解析失败"
 
     # 关键词模式
