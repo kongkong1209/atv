@@ -106,6 +106,12 @@ async def main() -> None:
         print(f"Database {args.init_db} initialized successfully.")
         return
 
+    if getattr(args, "keywords", None):
+        print(f"[Override] 将 config.KEYWORDS 从 {config.KEYWORDS} 更新为 {args.keywords}")
+        config.KEYWORDS = args.keywords
+    if getattr(args, "type", None):
+        config.CRAWLER_TYPE = args.type
+
     crawler = CrawlerFactory.create_crawler(platform=config.PLATFORM)
     await crawler.start()
 
