@@ -3,3 +3,4 @@ openai
 requests
 openai-whisper
 torch
+edge-tts
