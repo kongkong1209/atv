@@ -3,11 +3,8 @@ import json
 import os
 import re
 import sys
-import shutil
-import time
 import gradio as gr
 from logic.utils import run_module_stream
-from logic.simple_extractor import extract_video_info
 
 # 平台代码 -> 文件夹名称的映射
 FOLDER_NAME_MAP = {
@@ -26,11 +23,11 @@ PLATFORM_MAP = {
 
 def clean_old_data(crawler_path: str, platform_code: str):
     """
-    核弹级清理：强制删除旧数据文件和浏览器缓存目录。
+    清理旧数据文件，但保留浏览器缓存（登录状态）。
     """
     logs = []
     
-    # 1. 清理结果文件 (JSON)
+    # 只清理结果文件 (JSON)，不删除 browser_data（保留登录状态）
     folder_name = FOLDER_NAME_MAP.get(platform_code, platform_code)
     json_dir = os.path.join(crawler_path, "data", folder_name, "json")
     
@@ -45,17 +42,7 @@ def clean_old_data(crawler_path: str, platform_code: str):
                 except Exception:
                     pass
         if deleted_count > 0:
-            logs.append(f"> 🧹 已强制删除 {deleted_count} 个旧数据文件")
-
-    # 2. 清理浏览器缓存 (Browser Data) - 解决“幽灵复读”的关键
-    browser_data_dir = os.path.join(crawler_path, "browser_data")
-    if os.path.exists(browser_data_dir):
-        try:
-            # 暴力删除整个文件夹
-            shutil.rmtree(browser_data_dir, ignore_errors=True)
-            logs.append("> 🧹 已彻底粉碎浏览器缓存目录 (browser_data)，确保浏览器纯净启动")
-        except Exception as e:
-            logs.append(f"> ⚠️ 浏览器缓存清理失败 (可能文件被占用): {e}")
+            logs.append(f"> 🧹 已清理 {deleted_count} 个旧数据文件 (登录状态已保留)")
     
     return "\n".join(logs) + "\n\n" if logs else ""
 
@@ -112,6 +99,9 @@ def real_crawler_task(platform: str, keyword_or_link: str, count: int):
         yield (gr.update(open=False), gr.update(value=thought_log), table_data, None)
 
 def real_crawler_link_task(platform: str, video_link: str):
+    """
+    单链接提取模式 - 使用 MediaCrawler 的 detail 模式
+    """
     # --- 初始化 ---
     thought_log = ""
     yield (
@@ -127,22 +117,53 @@ def real_crawler_link_task(platform: str, video_link: str):
         yield (gr.update(open=False), gr.update(value=thought_log), [], "")
         return
 
-    # 正则提取链接
-    match = re.search(r'(https?://[a-zA-Z0-9\./\-_]+)', link_text)
+    # 正则提取链接 (支持分享文本中混杂的链接)
+    match = re.search(r'(https?://[a-zA-Z0-9\./\-_?=&]+)', link_text)
     clean_url = match.group(0) if match else link_text
     
     thought_log += f"> [DEBUG] 清洗后链接: {clean_url}\n\n"
-    
-    thought_log += "> ⚡ 使用 yt-dlp 进行单链接提取...\n\n"
     yield (gr.update(), gr.update(value=thought_log), [], "")
 
-    best_content = extract_video_info(clean_url)
-    if best_content.startswith("❌"):
-        thought_log += f"> {best_content}\n"
+    crawler_path = os.path.join(os.getcwd(), "modules", "mediacrawler")
+    platform_code = PLATFORM_MAP.get(platform, "dy")
+
+    # --- 执行清理 ---
+    thought_log += clean_old_data(crawler_path, platform_code)
+    yield (gr.update(), gr.update(value=thought_log), [], "")
+
+    # --- 构造命令 (使用 detail 模式 + specified_id) ---
+    cmd = [
+        sys.executable,
+        "main.py",
+        "--platform", platform_code,
+        "--type", "detail",
+        "--specified_id", clean_url,
+        "--lt", "qrcode",
+        "--get_comment", "false",  # 单链接模式不需要评论
+    ]
+
+    thought_log += f"> 🚀 使用 MediaCrawler detail 模式提取视频...\n\n"
+    thought_log += f"> [DEBUG] 命令: {' '.join(cmd)}\n\n"
+    yield (gr.update(), gr.update(value=thought_log), [], "")
+
+    # --- 运行爬虫 ---
+    for line in run_module_stream(cmd, cwd=crawler_path):
+        thought_log += f"> 🤖 {line}\n\n"
+        yield (gr.update(), gr.update(value=thought_log), [], "")
+
+    # --- 读取结果 ---
+    _, best_content, error_msg = get_latest_data(crawler_path, platform_code, mode="detail")
+    
+    if error_msg:
+        thought_log += f"> ❌ {error_msg}\n"
         yield (gr.update(open=False), gr.update(value=thought_log), [], "")
-    else:
+    elif best_content:
         thought_log += "> ✅ 提取成功！\n"
+        thought_log += "\n💡 提示：可直接复制上方文案到「文案编辑」进行 AI 改写"
         yield (gr.update(open=False), gr.update(value=thought_log), None, best_content)
+    else:
+        thought_log += "> ❌ 未能提取到文案内容\n"
+        yield (gr.update(open=False), gr.update(value=thought_log), [], "")
 
 def get_latest_data(crawler_path: str, platform_code: str, mode: str):
     folder_name = FOLDER_NAME_MAP.get(platform_code, platform_code)
