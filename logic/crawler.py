@@ -7,6 +7,7 @@ import shutil
 import time
 import gradio as gr
 from logic.utils import run_module_stream
+from logic.simple_extractor import extract_video_info
 
 # 平台代码 -> 文件夹名称的映射
 FOLDER_NAME_MAP = {
@@ -132,37 +133,12 @@ def real_crawler_link_task(platform: str, video_link: str):
     
     thought_log += f"> [DEBUG] 清洗后链接: {clean_url}\n\n"
     
-    crawler_path = os.path.join(os.getcwd(), "modules", "mediacrawler")
-    platform_code = PLATFORM_MAP.get(platform, "dy")
-
-    # --- 执行清理 ---
-    thought_log += clean_old_data(crawler_path, platform_code)
+    thought_log += "> ⚡ 使用 yt-dlp 进行单链接提取...\n\n"
     yield (gr.update(), gr.update(value=thought_log), [], "")
 
-    # --- 构造命令 ---
-    # 注意：已移除 --enable_comment 参数
-    cmd = [
-        sys.executable,
-        "main.py",
-        "--platform", platform_code,
-        "--keywords", clean_url,
-        "--type", "detail",
-        "--lt", "qrcode"
-    ]
-
-    thought_log += f"> [DEBUG] 构造命令: {' '.join(cmd)}\n\n"
-    yield (gr.update(), gr.update(value=thought_log), [], "")
-
-    # --- 运行爬虫 ---
-    for line in run_module_stream(cmd, cwd=crawler_path):
-        thought_log += f"> 🤖 {line}\n\n"
-        yield (gr.update(), gr.update(value=thought_log), [], "")
-
-    # --- 读取结果 ---
-    _, best_content, error_msg = get_latest_data(crawler_path, platform_code, mode="detail")
-
-    if error_msg:
-        thought_log += f"> ❌ {error_msg}\n"
+    best_content = extract_video_info(clean_url)
+    if best_content.startswith("❌"):
+        thought_log += f"> {best_content}\n"
         yield (gr.update(open=False), gr.update(value=thought_log), [], "")
     else:
         thought_log += "> ✅ 提取成功！\n"
